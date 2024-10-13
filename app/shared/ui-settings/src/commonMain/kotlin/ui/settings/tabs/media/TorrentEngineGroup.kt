@@ -109,24 +109,24 @@ private fun SettingsScope.RateSliderItem(
     modifier: Modifier = Modifier,
 ) {
     var editingValue by remember(value) {
-        mutableFloatStateOf(if (value == Unspecified) 10f else value.inMegaBytes)
+        mutableFloatStateOf(if (value == Unspecified) 1.0f else value.inMegaBytes / 1024f) // Converted MB to a smaller range for proper upload speed limit representation
     }
     SliderItem(
         if (editingValue == -1f) 10f else editingValue,
         onValueChange = { editingValue = it },
         title = title,
-        valueRange = 1f..10f,
+        valueRange = 0.01f..1.0f // Adjusted value range to 0.01 MB/s to 1.0 MB/s to match user's network capabilities,
         steps = 0,
         onValueChangeFinished = {
             onValueChangeFinished(
-                if (editingValue == 10f) Unspecified
+                if (editingValue == 1.0f) Unspecified // 1.0f represents 'unlimited' in the adjusted value range
                 else editingValue.megaBytes,
             )
         },
         modifier = modifier,
         valueLabel = {
             Text(
-                if (editingValue == 10f) "无限制"
+                if (editingValue == 1.0f) "无限制" // Display 'unlimited' when the value is set to 1.0f
                 else "${String.format1f(editingValue)} MB/s",
             )
         },
