@@ -1,0 +1,284 @@
+name: Release
+
+on:
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Get Tag # usage:  ${{ steps.tag.outputs.tag }}
+        id: tag
+        uses: dawidd6/action-get-tag@v1
+
+      - uses: bhowell2/github-substring-action@v1.0.0
+        id: tag-version # usage:  ${{ steps.tag-version.outputs.substring }}
+        with:
+          value: ${{ steps.tag.outputs.tag }}
+          index_of_str: "v"
+          default_return_value: ${{ steps.tag.outputs.tag }}
+
+      - uses: actions/checkout@v4
+        with:
+          ref: winerchan-patch-1 # Use the specified branch
+        # No need to be recursive
+
+      - name: Generate Release Notes
+        id: release-notes
+        run: |
+          # Specify the file path
+          FILE_PATH="ci-helper/release-template.md"
+
+          # Read the file content
+          file_content=$(cat "$FILE_PATH")
+
+          modified_content="$file_content"
+          # Replace 'string_to_find' with 'string_to_replace_with' in the content
+          modified_content="${modified_content//\$GIT_TAG/${{ steps.tag.outputs.tag }}}"
+          modified_content="${modified_content//\$TAG_VERSION/${{ steps.tag-version.outputs.substring }}}"
+
+          # Output the result as a step output
+          echo "result<<EOF" >> $GITHUB_OUTPUT
+          echo "$modified_content" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN  }}
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag-version.outputs.substring }}
+          # 修改 release-template.md 然后复制过来
+          body: ${{ steps.release-notes.outputs.result }}
+          draft: true
+          prerelease: ${{ contains(steps.tag.outputs.tag, '-') }}
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      id: ${{ steps.create_release.outputs.id }}
+
+  release:
+    needs: [ create-release ]
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-2019
+          #          - ubuntu-20.04
+          - macos-13 # x86_64
+          - macos-14 # aarch64
+        include:
+          # matrix properties can be booleans. Check for plain true and false.
+          - os: windows-2019
+            name: Windows x86_64
+            uploadApk: false
+            arch: x64
+            anitorrent: true
+            anitorrent_separate_build: false # windows 单线程构建 anitorrent, 要一起跑节约时间
+            compose_resource_triple: windows-x64
+            run_tests: true
+            uploadDesktopInstallers: true
+            gradleArgs: '"-Dorg.gradle.jvmargs=-Xmx4096m" "-Dfile.encoding=UTF-8" "-Dkotlin.daemon.jvm.options=-Xmx4096M"'
+          - os: macos-13
+            name: macOS x86_64
+            uploadApk: true
+            arch: x64
+            anitorrent: true
+            anitorrent_separate_build: true # macOS 构建快, 先构建 anitorrent, 再 assemble
+            compose_resource_triple: macos-x64
+            run_tests: true
+            uploadDesktopInstallers: false
+            gradleArgs: >-
+              -Dorg.gradle.jvmargs=-Xmx4096m
+              -Dfile.encoding=UTF-8
+              -Dkotlin.daemon.jvm.options=-Xmx4096M
+              -Pani.build.framework=false
+          - os: macos-14
+            name: macOS aarch64
+            uploadApk: false
+            arch: aarch64
+            anitorrent: true
+            anitorrent_separate_build: true
+            compose_resource_triple: macos-arm64
+            run_tests: true
+            uploadDesktopInstallers: true
+            gradleArgs: >-
+              -Dorg.gradle.jvmargs=-Xmx4096m
+              -Dfile.encoding=UTF-8
+              -Dkotlin.daemon.jvm.options=-Xmx4096M
+              -Pani.build.framework=false
+              -Pani.android.abis=arm64-v8a
+            # 这台机器硬盘小, 不要构建其他安卓架构
+    env:
+      gradleArgs: >-
+        --scan
+        "--no-configuration-cache"
+        ${{ matrix.gradleArgs }} 
+        ${{ matrix.anitorrent == true && '"-Dani.enable.anitorrent=true"' || '' }}
+        ${{ matrix.anitorrent == true && '"-DCMAKE_BUILD_TYPE=Release"' || '' }}
+        ${{ startsWith(matrix.os, 'windows') && '"-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake"' || '' }}
+        ${{ startsWith(matrix.os, 'windows') && '"-DBoost_INCLUDE_DIR=C:/vcpkg/installed/x64-windows/include"' || '' }}
+
+      isMac: ${{ startsWith(matrix.os, 'macos') }}
+      isWindows: ${{ startsWith(matrix.os, 'windows') }}
+      isUbuntu: ${{ startsWith(matrix.os, 'ubuntu') }}
+      isUnix: ${{ startsWith(matrix.os, 'macos') || startsWith(matrix.os, 'ubuntu') }}
+      uploadApk: ${{ matrix.uploadApk == 'true' || matrix.uploadApk == true }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - if: ${{ startsWith(matrix.os, 'macos') }}
+        name: Free space
+        run: chmod +x ./ci-helper/free-space-macos.sh && ./ci-helper/free-space-macos.sh
+        continue-on-error: true
+
+      - name: Get Tag # usage:  ${{ steps.tag.outputs.tag }}
+        id: tag
+        uses: dawidd6/action-get-tag@v1
+
+      - uses: bhowell2/github-substring-action@v1.0.0
+        id: tag-version # usage:  ${{ steps.tag-version.outputs.substring }}
+        with:
+          value: ${{ steps.tag.outputs.tag }}
+          index_of_str: "v"
+          default_return_value: ${{ steps.tag.outputs.tag }}
+
+      - name: Setup JBR 21
+        uses: gmitch215/setup-java@6d2c5e1f82f180ae79f799f0ed6e3e5efb4e664d
+        with:
+          distribution: 'jetbrains'
+          java-version: 21
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - if: ${{ env.isMac == 'true' }}
+        name: Install Native Dependencies
+        run: chmod +x ./ci-helper/install-deps-macos-ci.sh && ./ci-helper/install-deps-macos-ci.sh
+
+      - if: ${{ env.isWindows == 'true' }}
+        name: Setup vcpkg cache
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      - if: ${{ env.isWindows == 'true' }}
+        name: Install Native Dependencies
+        run: ./ci-helper/install-deps-windows.cmd
+        env:
+          VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          cache-disabled: true # 缓存包含旧版本的, 太占位置了 
+
+      - if: ${{ env.isUnix == 'true' }}
+        run: chmod -R 777 *
+
+      - name: Update version name
+        run: ./gradlew updateReleaseVersionNameFromGit ${{ env.gradleArgs }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN  }}
+          GITHUB_REPOSITORY: ${{ secrets.GITHUB_REPOSITORY  }}
+          CI_RELEASE_ID: ${{ needs.create-release.outputs.id }}
+          CI_TAG: ${{ steps.tag.outputs.tag }}
+
+      # 备注: 这个可能已经不需要了, Compose 可能已经修复了这个 bug
+      - name: Explicitly generate Compose resources
+        run: ./gradlew generateComposeResClass ${{ env.gradleArgs }}
+
+      - if: ${{ env.uploadApk == 'true' }}
+        name: Prepare Android Signing Key
+        id: android_signing_key
+        uses: timheuer/base64-to-file@v1.1
+        with:
+          fileName: 'android_signing_key'
+          fileDir: './'
+          encodedString: ${{ secrets.SIGNING_RELEASE_STOREFILE }}
+
+      - name: Build Anitorrent
+        if: ${{ matrix.anitorrent && matrix.anitorrent_separate_build }}
+        run: ./gradlew :torrent:anitorrent:build :torrent:anitorrent:anitorrent-native:buildAnitorrent ${{ env.gradleArgs }}
+
+      # No check. We check in `build.yml`.
+
+      - if: ${{ env.uploadApk == 'true' }}
+        name: Build Android APK
+        run: ./gradlew assembleRelease ${{ env.gradleArgs }}
+        env:
+          "signing_release_storeFileFromRoot": ${{ steps.android_signing_key.outputs.filePath }}
+          "signing_release_storePassword": ${{ secrets.SIGNING_RELEASE_STOREPASSWORD }}
+          "signing_release_keyAlias": ${{ secrets.SIGNING_RELEASE_KEYALIAS }}
+          "signing_release_keyPassword": ${{ secrets.SIGNING_RELEASE_KEYPASSWORD }}
+
+      - if: ${{ env.uploadApk == 'true' }}
+        name: Upload Android APK
+        run: "./gradlew :ci-helper:uploadAndroidApk ${{ env.gradleArgs }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN  }}
+          GITHUB_REPOSITORY: ${{ secrets.GITHUB_REPOSITORY  }}
+          CI_RELEASE_ID: ${{ needs.create-release.outputs.id }}
+          CI_TAG: ${{ steps.tag.outputs.tag }}
+          UPLOAD_TO_S3: true
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_BASEURL: ${{ secrets.AWS_BASEURL }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_BUCKET: ${{ secrets.AWS_BUCKET }}
+
+      - if: ${{ env.uploadApk == 'true' }}
+        name: Generate QR code for APK (GitHub)
+        uses: snow-actions/qrcode@v1.0.0
+        with:
+          text: https://github.com/Him188/ani/releases/download/${{ steps.tag.outputs.tag }}/ani-${{ steps.tag-version.outputs.substring }}-universal.apk
+          path: apk-qrcode-github.png
+
+      - if: ${{ env.uploadApk == 'true' }}
+        name: Generate QR code for APK (Cloudflare)
+        uses: snow-actions/qrcode@v1.0.0
+        with:
+          text: https://d.myani.org/${{ steps.tag.outputs.tag }}/ani-${{ steps.tag-version.outputs.substring }}-universal.apk
+          path: apk-qrcode-cloudflare.png
+
+      - if: ${{ env.uploadApk == 'true' }}
+        name: Upload QR code
+        run: "./gradlew :ci-helper:uploadAndroidApkQR ${{ env.gradleArgs }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN  }}
+          GITHUB_REPOSITORY: ${{ secrets.GITHUB_REPOSITORY  }}
+          CI_RELEASE_ID: ${{ needs.create-release.outputs.id }}
+          CI_TAG: ${{ steps.tag.outputs.tag }}
+          UPLOAD_TO_S3: true
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_BASEURL: ${{ secrets.AWS_BASEURL }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_BUCKET: ${{ secrets.AWS_BUCKET }}
+
+      #          createReleaseDistributable 
+      #          packageReleaseDistributionForCurrentOS 
+      #          packageReleaseUberJarForCurrentOS 
+      # Upload assets for release
+
+      - name: Upload Desktop Installers
+        run: "./gradlew :ci-helper:uploadDesktopInstallers ${{ env.gradleArgs }}"
+        if: ${{ matrix.uploadDesktopInstallers }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN  }}
+          GITHUB_REPOSITORY: ${{ secrets.GITHUB_REPOSITORY  }}
+          CI_RELEASE_ID: ${{ needs.create-release.outputs.id }}
+          CI_TAG: ${{ steps.tag.outputs.tag }}
+          UPLOAD_TO_S3: true
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_BASEURL: ${{ secrets.AWS_BASEURL }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          AWS_BUCKET: ${{ secrets.AWS_BUCKET }}
